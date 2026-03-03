@@ -1,0 +1,21 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Large data
+archive/
+data/raw/
+data/raw_multiclass/
+data/spectrograms/
+data/spectrograms_multiclass/
+
+# Model files
+*.pkl
+*.h5
+*.keras
+
+# Temp files
+temp_spec.png
