@@ -5,34 +5,31 @@ from sklearn.model_selection import train_test_split
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import classification_report, confusion_matrix
 
-from tensorflow.keras.layers import (
-    Dense,
-    Conv2D,
-    MaxPooling2D,
-    Dropout,
-    Input,
-    BatchNormalization,
-    GlobalAveragePooling2D
-)
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.models import Model
+from tensorflow.keras.preprocessing.image import load_img, img_to_array, ImageDataGenerator
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.applications import MobileNetV2
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 DATA_PATH = "data/spectrograms_multiclass"
-IMG_SIZE = (224, 224)   # 🔥 Reduced for better generalization
+IMG_SIZE = (224, 224)
 BATCH_SIZE = 16
-EPOCHS = 50
+EPOCHS = 20   # 🔥 shorter first phase
 
 # -----------------------------
-# LOAD IMAGES INTO MEMORY
+# LOAD DATA
 # -----------------------------
 images = []
 labels = []
 
-class_names = sorted(os.listdir(DATA_PATH))
+class_names = sorted([
+    d for d in os.listdir(DATA_PATH)
+    if os.path.isdir(os.path.join(DATA_PATH, d))
+])
+
 class_indices = {name: idx for idx, name in enumerate(class_names)}
 
 print("Class mapping:", class_indices)
@@ -50,34 +47,25 @@ for class_name in class_names:
             images.append(img)
             labels.append(class_indices[class_name])
 
-images = np.array(images)
+images = np.array(images) / 255.0
 labels = np.array(labels)
-
-# Normalize
-images = images / 255.0
 
 print("Total samples:", len(images))
 print("Class distribution:", np.bincount(labels))
 
 # -----------------------------
-# STRATIFIED SPLIT
+# SPLIT
 # -----------------------------
 X_train, X_val, y_train, y_val = train_test_split(
     images,
     labels,
     test_size=0.2,
     stratify=labels,
-    shuffle=True,
     random_state=42
 )
 
-print("Training samples:", len(X_train))
-print("Validation samples:", len(X_val))
-print("Train distribution:", np.bincount(y_train))
-print("Val distribution:", np.bincount(y_val))
-
 # -----------------------------
-# CLASS WEIGHTS (🔥 Important)
+# CLASS WEIGHTS
 # -----------------------------
 class_weights = compute_class_weight(
     class_weight='balanced',
@@ -89,33 +77,47 @@ class_weights = dict(enumerate(class_weights))
 print("Class weights:", class_weights)
 
 # -----------------------------
-# MODEL ARCHITECTURE
+# AUGMENTATION
 # -----------------------------
-model = Sequential([
-    Input((224, 224, 3)),
+datagen = ImageDataGenerator(
+    rotation_range=8,
+    width_shift_range=0.05,
+    height_shift_range=0.05,
+    zoom_range=0.05
+)
 
-    Conv2D(32, 3, activation='relu'),
-    BatchNormalization(),
-    MaxPooling2D(2),
+datagen.fit(X_train)
 
-    Conv2D(64, 3, activation='relu'),
-    BatchNormalization(),
-    MaxPooling2D(2),
+# -----------------------------
+# MODEL (🔥 MobileNetV2)
+# -----------------------------
+num_classes = len(class_names)
 
-    Conv2D(128, 3, activation='relu'),
-    BatchNormalization(),
-    MaxPooling2D(2),
+base_model = MobileNetV2(
+    weights='imagenet',
+    include_top=False,
+    input_shape=(224, 224, 3)
+)
 
-    GlobalAveragePooling2D(),
+# Freeze base model
+for layer in base_model.layers:
+    layer.trainable = False
 
-    Dense(128, activation='relu'),
-    Dropout(0.4),
+x = base_model.output
+x = GlobalAveragePooling2D()(x)
 
-    Dense(3, activation='softmax')
-])
+x = Dense(128, activation='relu')(x)
+x = Dropout(0.4)(x)
+
+x = Dense(64, activation='relu')(x)
+x = Dropout(0.3)(x)
+
+output = Dense(num_classes, activation='softmax')(x)
+
+model = Model(inputs=base_model.input, outputs=output)
 
 model.compile(
-    optimizer='adam',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=1e-4),
     loss='sparse_categorical_crossentropy',
     metrics=['accuracy']
 )
@@ -123,32 +125,51 @@ model.compile(
 model.summary()
 
 # -----------------------------
-# TRAINING
+# TRAIN (PHASE 1)
 # -----------------------------
 early_stop = EarlyStopping(
-    patience=8,
+    patience=5,
     restore_best_weights=True
 )
 
 history = model.fit(
-    X_train,
-    y_train,
+    datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
     validation_data=(X_val, y_val),
     epochs=EPOCHS,
-    batch_size=BATCH_SIZE,
     callbacks=[early_stop],
-    class_weight=class_weights   # 🔥 Added
+    class_weight=class_weights
 )
 
 # -----------------------------
-# FINAL EVALUATION
+# FINE-TUNING (PHASE 2)
+# -----------------------------
+print("\n🔧 Fine-tuning last layers...")
+
+for layer in base_model.layers[-30:]:
+    layer.trainable = True
+
+model.compile(
+    optimizer=tf.keras.optimizers.Adam(1e-5),
+    loss='sparse_categorical_crossentropy',
+    metrics=['accuracy']
+)
+
+history_fine = model.fit(
+    datagen.flow(X_train, y_train, batch_size=BATCH_SIZE),
+    validation_data=(X_val, y_val),
+    epochs=10,
+    callbacks=[early_stop],
+    class_weight=class_weights
+)
+
+# -----------------------------
+# EVALUATION
 # -----------------------------
 val_loss, val_acc = model.evaluate(X_val, y_val)
 
 print("\nFinal Validation Accuracy:", val_acc)
 print("Final Validation Loss:", val_loss)
 
-# Confusion Matrix + Report
 y_pred = model.predict(X_val)
 y_pred_classes = np.argmax(y_pred, axis=1)
 
@@ -156,10 +177,10 @@ print("\nConfusion Matrix:")
 print(confusion_matrix(y_val, y_pred_classes))
 
 print("\nClassification Report:")
-print(classification_report(y_val, y_pred_classes))
+print(classification_report(y_val, y_pred_classes, target_names=class_names))
 
 # -----------------------------
-# SAVE MODEL
+# SAVE
 # -----------------------------
 model.save("data/multiclass_cnn.keras")
 print("Multiclass CNN saved successfully.")
