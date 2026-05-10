@@ -1,10 +1,10 @@
 streamlit
-tensorflow
+tensorflow==2.15.0
 numpy
 librosa
 matplotlib
-sounddevice
-scipy
-fpdf
 scikit-learn
 pillow
+fpdf
+scipy
+sounddevice
