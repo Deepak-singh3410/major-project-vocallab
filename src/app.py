@@ -1,93 +1,191 @@
 import streamlit as st
 import numpy as np
-import librosa
-import tensorflow as tf
-import sounddevice as sd
-from scipy.io.wavfile import write
 import tempfile
-import matplotlib.pyplot as plt
+import base64
+from fpdf import FPDF
 
-# -----------------------------
-# LOAD MODEL
-# -----------------------------
-model = tf.keras.models.load_model("data/multiclass_cnn.keras")
+# SAFE IMPORT FOR MIC
+try:
+    import sounddevice as sd
+    from scipy.io.wavfile import write
+    MIC_AVAILABLE = True
+except:
+    MIC_AVAILABLE = False
 
-CLASS_NAMES = ["Laryngozele", "Normal", "Parkinson", "Vox_senilis"]
+from hierarchical_inference import predict
 
-# -----------------------------
-# RECORD AUDIO
-# -----------------------------
+# ---------------- CONFIG ----------------
+st.set_page_config(page_title="Vocal Diagnosis", layout="wide")
+
+# ---------------- STYLE ----------------
+st.markdown("""
+<style>
+body {background-color: #0e1117;}
+h1, h2, h3 {color: #00ffcc;}
+
+.nav-btn button {
+    width: 100%;
+    border-radius: 10px;
+    font-weight: bold;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ---------------- FAST NAVIGATION ----------------
+if "page" not in st.session_state:
+    st.session_state.page = "Home"
+
+nav1, nav2, nav3 = st.columns(3)
+
+with nav1:
+    if st.button("🏠 Home"):
+        st.session_state.page = "Home"
+
+with nav2:
+    if st.button("🧪 Diagnosis"):
+        st.session_state.page = "Diagnosis"
+
+with nav3:
+    if st.button("ℹ️ About"):
+        st.session_state.page = "About"
+
+st.markdown("---")
+
+# ---------------- AUDIO RECORD ----------------
 def record_audio(duration=5, fs=44100):
-    st.info("Recording... Speak now")
     audio = sd.rec(int(duration * fs), samplerate=fs, channels=1)
     sd.wait()
-    st.success("Recording complete")
-
     temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
     write(temp_file.name, fs, audio)
-
     return temp_file.name
 
-# -----------------------------
-# GENERATE SPECTROGRAM
-# -----------------------------
-def generate_spectrogram(audio_path):
-    y, sr = librosa.load(audio_path, sr=44100)
+# ---------------- PDF REPORT ----------------
+def generate_pdf(name, age, result, confidence):
+    pdf = FPDF()
+    pdf.add_page()
 
-    mel = librosa.feature.melspectrogram(
-        y=y,
-        sr=sr,
-        n_mels=128,
-        fmax=8000
-    )
+    pdf.set_font("Arial", "B", 16)
+    pdf.cell(200, 10, "Vocal Diagnosis Report", ln=True, align="C")
 
-    mel_db = librosa.power_to_db(mel, ref=np.max)
+    pdf.ln(10)
 
-    mel_db -= mel_db.min()
-    mel_db /= mel_db.max()
-    mel_db *= 255
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, f"Patient Name: {name}", ln=True)
+    pdf.cell(200, 10, f"Age: {age}", ln=True)
 
-    # Save image
-    fig = plt.figure(figsize=(2.24, 2.24), dpi=100)
-    plt.imshow(mel_db, aspect='auto', origin='lower', cmap='magma')
-    plt.axis('off')
+    pdf.ln(10)
 
-    temp_img = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-    plt.savefig(temp_img.name, bbox_inches='tight', pad_inches=0)
-    plt.close()
+    pdf.set_font("Arial", "B", 14)
+    pdf.cell(200, 10, "Diagnosis Result", ln=True)
 
-    return temp_img.name
+    pdf.set_font("Arial", size=12)
+    pdf.cell(200, 10, f"Condition: {result}", ln=True)
+    pdf.cell(200, 10, f"Confidence: {confidence:.2f}", ln=True)
 
-# -----------------------------
-# PREDICT
-# -----------------------------
-def predict(audio_path):
-    spec_path = generate_spectrogram(audio_path)
+    pdf.ln(10)
 
-    img = tf.keras.preprocessing.image.load_img(spec_path, target_size=(224, 224))
-    img = tf.keras.preprocessing.image.img_to_array(img) / 255.0
-    img = np.expand_dims(img, axis=0)
+    if result != "Normal":
+        pdf.set_text_color(255, 0, 0)
+        pdf.cell(200, 10, "Medical attention recommended", ln=True)
+    else:
+        pdf.set_text_color(0, 128, 0)
+        pdf.cell(200, 10, "No abnormalities detected", ln=True)
 
-    pred = model.predict(img)
-    class_index = np.argmax(pred)
+    return pdf.output(dest="S").encode("latin-1")
 
-    return CLASS_NAMES[class_index], np.max(pred)
+# ---------------- HOME ----------------
+def home():
+    st.title("🎤 Vocal Disease Detection System Made by Deepak singh and Deepka sharma ")
+    st.write("""
+    Detect:
+    - Laryngozele
+    - Vox Senilis
+    - Parkinson’s
+    - Normal
+    """)
 
-# -----------------------------
-# UI
-# -----------------------------
-st.title("🎤 Vocal Disease Detection System")
+# ---------------- DIAGNOSIS ----------------
+def diagnosis():
+    st.title("🧪 Voice Diagnosis")
 
-st.write("Click below and speak for 5 seconds")
+    col1, col2 = st.columns(2)
 
-if st.button("🎙 Record Voice"):
-    audio_path = record_audio()
+    with col1:
+        name = st.text_input("Patient Name")
+        age = st.text_input("Age")
 
-    st.audio(audio_path)
+    with col2:
+        options = ["Upload"]
+        if MIC_AVAILABLE:
+            options.append("Record")
 
-    st.write("Processing...")
+        option = st.radio("Input Method", options)
 
-    label, confidence = predict(audio_path)
+    audio_path = None
 
-    st.success(f"Diagnosis: {label}")
-    st.info(f"Confidence: {confidence:.2f}")
+    # -------- Upload --------
+    if option == "Upload":
+        file = st.file_uploader("Upload WAV file", type=["wav"])
+        if file:
+            st.audio(file)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(file.read())
+                audio_path = tmp.name
+
+    # -------- Record --------
+    elif option == "Record":
+        if st.button("🎙 Record"):
+            audio_path = record_audio()
+            st.audio(audio_path)
+
+    # -------- Prediction --------
+    if audio_path:
+        st.info("Processing...")
+
+        result = predict(audio_path)
+
+        if isinstance(result, tuple):
+            label = result[0]
+            confidence = float(result[1]) if len(result) > 1 else 0.5
+        else:
+            label = result
+            confidence = 0.5
+
+        st.success(f"Diagnosis: {label}")
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Condition", label)
+        c2.metric("Confidence", f"{confidence:.2f}")
+        c3.metric("Status", "Healthy" if label == "Normal" else "Abnormal")
+
+        st.progress(confidence)
+
+        if label != "Normal":
+            st.error("⚠️ Possible pathology detected")
+        else:
+            st.success("✅ Healthy")
+
+        if name and age:
+            pdf = generate_pdf(name, age, label, confidence)
+
+            st.download_button(
+                "📄 Download Report",
+                data=pdf,
+                file_name="report.pdf",
+                mime="application/pdf"
+            )
+        else:
+            st.warning("Enter patient details to download report")
+
+# ---------------- ABOUT ----------------
+def about():
+    st.title("About")
+    st.write("AI system for vocal disease detection.")
+
+# ---------------- ROUTER ----------------
+if st.session_state.page == "Home":
+    home()
+elif st.session_state.page == "Diagnosis":
+    diagnosis()
+elif st.session_state.page == "About":
+    about()

@@ -15,3 +15,10 @@ archive/
 # Media
 *.wav
 *.png
+venv/
+__pycache__/
+Italian_Parkinsons_Voice_and_Speech/
+data/raw_multiclass/
+data/spectrograms_multiclass/
+*.wav
+*.png

@@ -6,12 +6,50 @@ import tensorflow as tf
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 
 # -----------------------------
-# LOAD MODELS
+# PATHS & LOAD MODELS
 # -----------------------------
-rf_model = joblib.load("data/random_forest_model.pkl")
-cnn_model = tf.keras.models.load_model("data/cnn_model.h5")
+# Make data paths robust relative to this file
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-CLASS_NAMES = ["Laryngozele", "Normal", "Vox_senilis"]
+rf_model = joblib.load(os.path.join(DATA_DIR, "random_forest_model.pkl"))
+# Derive class names from the training spectrogram folder to ensure ordering
+SPEC_DIR = os.path.join(DATA_DIR, "spectrograms_multiclass")
+if os.path.isdir(SPEC_DIR):
+    CLASS_NAMES = sorted([
+        d for d in os.listdir(SPEC_DIR)
+        if os.path.isdir(os.path.join(SPEC_DIR, d))
+    ])
+else:
+    # fallback to a safe default
+    CLASS_NAMES = ["Laryngozele", "Normal", "Vox_senilis", "Parkinsions"]
+
+# prefer the explicit h5 if present, otherwise fallback to saved keras folder
+cnn_path = os.path.join(DATA_DIR, "cnn_model.h5")
+if not os.path.exists(cnn_path):
+    cnn_path = os.path.join(DATA_DIR, "multiclass_cnn.keras")
+
+
+cnn_model = tf.keras.models.load_model(cnn_path)
+
+# If the loaded model's output doesn't match the number of class folders,
+# prefer the explicit multiclass model file if available.
+try:
+    out_neurons = int(cnn_model.output_shape[-1])
+except Exception:
+    out_neurons = None
+
+if out_neurons is None or os.path.isdir(SPEC_DIR) and out_neurons != len([d for d in os.listdir(SPEC_DIR) if os.path.isdir(os.path.join(SPEC_DIR, d))]):
+    alt_path = os.path.join(DATA_DIR, "multiclass_cnn.keras")
+    if os.path.exists(alt_path) and alt_path != cnn_path:
+        cnn_model = tf.keras.models.load_model(alt_path)
+        try:
+            out_neurons = int(cnn_model.output_shape[-1])
+        except Exception:
+            out_neurons = None
+
+# Derive class names from the training spectrogram folder to ensure ordering
+SPEC_DIR = os.path.join(DATA_DIR, "spectrograms_multiclass")
 IMG_SIZE = (224, 224)
 
 # -----------------------------
@@ -83,8 +121,13 @@ def predict(audio_path):
     features = extract_rf_features(audio_path)
     rf_prediction = rf_model.predict(features)[0]
 
+    # If RF says healthy (0) -> skip CNN and return Normal with RF probability
     if rf_prediction == 0:
-        return "Healthy"
+        try:
+            prob = float(rf_model.predict_proba(features)[0][0])
+        except Exception:
+            prob = 0.9
+        return ("Normal", prob)
 
     # -------- Step 2: Multiclass CNN --------
     spec_path = generate_spectrogram(audio_path)
@@ -95,9 +138,24 @@ def predict(audio_path):
     img = np.expand_dims(img, axis=0)
 
     cnn_prediction = cnn_model.predict(img)
-    class_index = np.argmax(cnn_prediction)
+    class_index = int(np.argmax(cnn_prediction, axis=1)[0])
+    prob = float(np.max(cnn_prediction))
 
-    return CLASS_NAMES[class_index]
+    raw_label = CLASS_NAMES[class_index]
+
+    # map common dataset names to user-friendly labels
+    display_map = {
+        "Vox_senilis": "Vox Senilis",
+        "Vox senilis": "Vox Senilis",
+        "Parkinsions": "Parkinsons",
+        "Parkinsons": "Parkinsons",
+        "Normal": "Normal",
+        "Laryngozele": "Laryngozele"
+    }
+
+    display_label = display_map.get(raw_label, raw_label.replace("_", " "))
+
+    return (display_label, prob)
 
 # -----------------------------
 # TEST RUN
