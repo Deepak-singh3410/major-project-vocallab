@@ -7,4 +7,3 @@ scikit-learn
 pillow
 fpdf
 scipy
-sounddevice
