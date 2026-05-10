@@ -23,7 +23,10 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 # -----------------------------
 # CLASS NAMES
 # -----------------------------
+cnn_path = os.path.join(DATA_DIR, "streamlit_model.h5")
+
 SPEC_DIR = os.path.join(DATA_DIR, "spectrograms_multiclass")
+
 
 if os.path.isdir(SPEC_DIR):
 
